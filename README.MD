@@ -7,11 +7,6 @@ Este projeto cria um bot para gerenciar sorteios com a regra:
 - Sorteio de **1 único vencedor**.
 - Prêmio anunciado de **10.000 FE**.
 
-## O que foi ajustado
-
-Este bot agora usa **slash commands** (comandos `/`) em vez de comandos por prefixo (`!`).
-Assim, ele funciona sem precisar ativar *Privileged Intents* no portal do Discord.
-
 ## Requisitos
 
 - Python 3.10+
@@ -53,31 +48,30 @@ Para respeitar seu fluxo (canal de visualização para membros e somente você e
 
 ## Comandos
 
-> Todos os comandos validam permissão de **administrador**.
+> Todos os comandos exigem permissão de **administrador**.
 
-- `/add member:<usuário> fe_value:<valor>`
+- `!add @usuario <fe>`
   - Adiciona FE ao participante.
   - Converte automaticamente em tickets com regra `fe // 5000`.
-  - Exemplo: `/add member:@Joao fe_value:15000` -> 3 tickets.
+  - Exemplo: `!add @Joao 15000` -> 3 tickets.
 
-- `/status member:<usuário>`
+- `!status @usuario`
   - Mostra FE acumulado e tickets do participante.
 
-- `/list`
+- `!list`
   - Lista todos os participantes com tickets e FE acumulados.
 
-- `/draw`
+- `!draw`
   - Realiza o sorteio ponderado por tickets.
   - Anuncia 1 vencedor e prêmio de 10.000 FE.
 
-- `/reset`
+- `!reset`
   - Limpa todos os participantes e tickets para um novo ciclo.
 
 ## Armazenamento
 
 Os dados ficam em `raffle_data.json` no mesmo diretório do projeto.
 
-## Observações
+## Observação
 
-- Após iniciar o bot, os slash commands podem levar alguns segundos para aparecer no Discord.
-- A lógica de ticket é aplicada por comando executado: cada valor informado em `/add` gera `fe // 5000` tickets.
+A lógica atual considera **tickets por lote informado** no comando `!add` (regra direta de negócio solicitada).

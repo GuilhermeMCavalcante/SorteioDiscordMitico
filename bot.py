@@ -2,17 +2,15 @@ import json
 import os
 import random
 from pathlib import Path
-from typing import Any
+from typing import Dict, Any
 
 import discord
-from discord import app_commands
+from discord.ext import commands
 
 DATA_FILE = Path("raffle_data.json")
-PRIZE_FE = 10000
-TICKET_FE_RATIO = 5000
 
 
-def load_data() -> dict[str, Any]:
+def load_data() -> Dict[str, Any]:
     if not DATA_FILE.exists():
         return {"participants": {}}
 
@@ -25,78 +23,65 @@ def load_data() -> dict[str, Any]:
     return data
 
 
-def save_data(data: dict[str, Any]) -> None:
+def save_data(data: Dict[str, Any]) -> None:
     with DATA_FILE.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def tickets_from_fe(fe_value: int) -> int:
-    return fe_value // TICKET_FE_RATIO
+    return fe_value // 5000
 
 
-def build_pool(participants: dict[str, dict[str, int]]) -> list[str]:
+def build_pool(participants: Dict[str, Dict[str, int]]) -> list[str]:
     pool: list[str] = []
     for user_id, info in participants.items():
         pool.extend([user_id] * info["tickets"])
     return pool
 
 
-class RaffleBot(discord.Client):
-    def __init__(self) -> None:
-        intents = discord.Intents.default()
-        intents.guilds = True
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-        self.raffle_channel_id = os.getenv("RAFFLE_CHANNEL_ID")
+intents = discord.Intents.default()
+intents.guilds = True
+intents.members = True
+intents.message_content = True
 
-    async def setup_hook(self) -> None:
-        await self.tree.sync()
-
-    async def on_ready(self) -> None:
-        if self.user is not None:
-            print(f"Bot online como {self.user} (ID: {self.user.id})")
+bot = commands.Bot(command_prefix="!", intents=intents)
+RAFFLE_CHANNEL_ID = os.getenv("RAFFLE_CHANNEL_ID")
 
 
-bot = RaffleBot()
 
 
-def has_admin(interaction: discord.Interaction) -> bool:
-    if not isinstance(interaction.user, discord.Member):
-        return False
-    return interaction.user.guild_permissions.administrator
+
+async def validate_raffle_channel(ctx: commands.Context) -> bool:
+    if not RAFFLE_CHANNEL_ID:
+        return True
+
+    return str(ctx.channel.id) == RAFFLE_CHANNEL_ID
 
 
-async def validate_context(interaction: discord.Interaction) -> tuple[bool, str | None]:
-    if not has_admin(interaction):
-        return False, "Você não tem permissão para usar este comando."
+@bot.check
+async def global_channel_check(ctx: commands.Context) -> bool:
+    if await validate_raffle_channel(ctx):
+        return True
 
-    if bot.raffle_channel_id and str(interaction.channel_id) != bot.raffle_channel_id:
-        return False, "Use os comandos apenas no canal configurado para sorteio."
+    await ctx.send("Use os comandos apenas no canal configurado para sorteio.")
+    return False
 
-    if interaction.guild is None:
-        return False, "Este comando só pode ser usado dentro de um servidor."
+@bot.event
+async def on_ready() -> None:
+    print(f"Bot online como {bot.user} (ID: {bot.user.id})")
 
-    return True, None
 
-
-@bot.tree.command(name="add", description="Adiciona FE para um usuário e converte em tickets")
-@app_commands.describe(member="Membro que receberá os tickets", fe_value="Valor de FE adicionado")
-async def add_participant(interaction: discord.Interaction, member: discord.Member, fe_value: int) -> None:
-    valid, error = await validate_context(interaction)
-    if not valid:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
+@bot.command(name="add")
+@commands.has_permissions(administrator=True)
+async def add_participant(ctx: commands.Context, member: discord.Member, fe_value: int) -> None:
+    """Adiciona FE para um participante e converte em tickets (1 ticket a cada 5.000 FE)."""
     if fe_value <= 0:
-        await interaction.response.send_message("O valor de FE precisa ser maior que 0.", ephemeral=True)
+        await ctx.send("O valor de FE precisa ser maior que 0.")
         return
 
     gained_tickets = tickets_from_fe(fe_value)
     if gained_tickets == 0:
-        await interaction.response.send_message(
-            "Esse valor não gera ticket. É necessário no mínimo 5.000 FE por ticket.",
-            ephemeral=True,
-        )
+        await ctx.send("Esse valor não gera ticket. É necessário no mínimo 5.000 FE por ticket.")
         return
 
     data = load_data()
@@ -113,92 +98,93 @@ async def add_participant(interaction: discord.Interaction, member: discord.Memb
     participants[user_id]["name"] = member.display_name
     participants[user_id]["fe_total"] += fe_value
     participants[user_id]["tickets"] += gained_tickets
+
     save_data(data)
 
-    await interaction.response.send_message(
+    await ctx.send(
         f"✅ {member.mention} recebeu **{gained_tickets} ticket(s)**. "
         f"Total atual: **{participants[user_id]['tickets']} ticket(s)** "
         f"({participants[user_id]['fe_total']} FE acumulados)."
     )
 
 
-@bot.tree.command(name="status", description="Mostra status de tickets de um participante")
-@app_commands.describe(member="Membro para consultar")
-async def participant_status(interaction: discord.Interaction, member: discord.Member) -> None:
-    valid, error = await validate_context(interaction)
-    if not valid:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
+@bot.command(name="status")
+@commands.has_permissions(administrator=True)
+async def participant_status(ctx: commands.Context, member: discord.Member) -> None:
     data = load_data()
     participant = data["participants"].get(str(member.id))
 
     if not participant:
-        await interaction.response.send_message(f"{member.mention} ainda não possui tickets.")
+        await ctx.send(f"{member.mention} ainda não possui tickets.")
         return
 
-    await interaction.response.send_message(
+    await ctx.send(
         f"📌 {member.mention}: {participant['tickets']} ticket(s), "
         f"{participant['fe_total']} FE acumulados."
     )
 
 
-@bot.tree.command(name="list", description="Lista participantes e tickets")
-async def list_participants(interaction: discord.Interaction) -> None:
-    valid, error = await validate_context(interaction)
-    if not valid:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
+@bot.command(name="list")
+@commands.has_permissions(administrator=True)
+async def list_participants(ctx: commands.Context) -> None:
     data = load_data()
     participants = data["participants"]
 
     if not participants:
-        await interaction.response.send_message("Nenhum participante cadastrado ainda.")
+        await ctx.send("Nenhum participante cadastrado ainda.")
         return
 
     lines = ["🎟️ **Participantes do sorteio**"]
     for info in sorted(participants.values(), key=lambda i: i["tickets"], reverse=True):
         lines.append(f"- {info['name']}: {info['tickets']} ticket(s) | {info['fe_total']} FE")
 
-    await interaction.response.send_message("\n".join(lines))
+    await ctx.send("\n".join(lines))
 
 
-@bot.tree.command(name="draw", description="Realiza o sorteio de um único vencedor")
-async def draw_winner(interaction: discord.Interaction) -> None:
-    valid, error = await validate_context(interaction)
-    if not valid:
-        await interaction.response.send_message(error, ephemeral=True)
-        return
-
+@bot.command(name="draw")
+@commands.has_permissions(administrator=True)
+async def draw_winner(ctx: commands.Context) -> None:
+    """Sorteia 1 único vencedor para prêmio de 10.000 FE."""
     data = load_data()
     participants = data["participants"]
-    pool = build_pool(participants)
 
+    pool = build_pool(participants)
     if not pool:
-        await interaction.response.send_message("Não há tickets para realizar o sorteio.")
+        await ctx.send("Não há tickets para realizar o sorteio.")
         return
 
     winner_id = int(random.choice(pool))
-    winner = interaction.guild.get_member(winner_id) if interaction.guild else None
+    winner = ctx.guild.get_member(winner_id)
     winner_mention = winner.mention if winner else f"<@{winner_id}>"
 
-    await interaction.response.send_message(
+    await ctx.send(
         "🏆 **RESULTADO DO SORTEIO** 🏆\n"
         f"Vencedor: {winner_mention}\n"
-        f"Prêmio: **{PRIZE_FE:,} FE**".replace(",", ".")
+        "Prêmio: **10.000 FE**"
     )
 
 
-@bot.tree.command(name="reset", description="Reseta todos os participantes e tickets")
-async def reset_raffle(interaction: discord.Interaction) -> None:
-    valid, error = await validate_context(interaction)
-    if not valid:
-        await interaction.response.send_message(error, ephemeral=True)
+@bot.command(name="reset")
+@commands.has_permissions(administrator=True)
+async def reset_raffle(ctx: commands.Context) -> None:
+    save_data({"participants": {}})
+    await ctx.send("♻️ Sorteio resetado. Todos os participantes e tickets foram removidos.")
+
+
+@add_participant.error
+@participant_status.error
+@list_participants.error
+@draw_winner.error
+@reset_raffle.error
+async def admin_command_error(ctx: commands.Context, error: commands.CommandError) -> None:
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("Você não tem permissão para usar este comando.")
+        return
+    if isinstance(error, commands.BadArgument):
+        await ctx.send("Argumento inválido. Confira o comando e tente novamente.")
         return
 
-    save_data({"participants": {}})
-    await interaction.response.send_message("♻️ Sorteio resetado. Todos os participantes e tickets foram removidos.")
+    raise error
 
 
 if __name__ == "__main__":
